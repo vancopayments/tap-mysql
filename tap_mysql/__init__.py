@@ -755,17 +755,17 @@ def main_impl():
         LOGGER.warning("No properties were selected")
         return
 
-    interval = CONFIG_OBJ.get('tap_config', 'interval')
-    runtime = CONFIG_OBJ.get('tap_config', 'runtime')
-
-    # Set initial runtime stripping out seconds and microseconds.
-    datetimeobj = datetime.datetime
-    nextrundate = datetimeobj.now().strftime('%Y-%m-%d')
-    nextrundatetime = datetimeobj.strptime('%s %s' % (nextrundate, runtime), '%Y-%m-%d %H:%M:%S')
-    nextrundatetime = nextrundatetime.replace(second=0, microsecond=0)
-
     # Start the syncing loop.
-    if CONFIG_OBJ.get('tap_config','schedule_sync'):
+    if str(CONFIG_OBJ.get('tap_config','schedule_sync')).upper() == 'TRUE':
+        interval = CONFIG_OBJ.get('tap_config','interval')
+        runtime = CONFIG_OBJ.get('tap_config','runtime')
+
+        # Set initial runtime stripping out seconds and microseconds.
+        datetimeobj = datetime.datetime
+        nextrundate = datetimeobj.now().strftime('%Y-%m-%d')
+        nextrundatetime = datetimeobj.strptime('%s %s' % (nextrundate,runtime),'%Y-%m-%d %H:%M:%S')
+        nextrundatetime = nextrundatetime.replace(second=0,microsecond=0)
+        
         while True:
             # Print what's happening on a static line.
             sys.stdout.write('Waiting for next run time: %s \r' % datetimeobj.strftime(nextrundatetime, '%Y-%m-%d %H:%M:%S'))
