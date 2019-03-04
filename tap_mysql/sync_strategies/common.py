@@ -152,7 +152,7 @@ def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version
         cursor.execute(select_sql, params)
     except Exception:
         LOGGER.info('Running %s',query_string)
-        LOGGER.exception()
+        LOGGER.exception("An Exception has occurred.")
         cursor.execute(select_sql, params)
 
     row = cursor.fetchone()
