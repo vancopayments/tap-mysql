@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # pylint: disable=too-many-arguments,duplicate-code,too-many-locals
 
+import os
+import json
 import copy
 import datetime
 import singer
@@ -136,7 +138,7 @@ def whitelist_bookmark_keys(bookmark_key_set, tap_stream_id, state):
         singer.clear_bookmark(state, tap_stream_id, bk)
 
 
-def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version, params):
+def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version, params, original_state_file=''):
     replication_key = singer.get_bookmark(state,
                                           catalog_entry.tap_stream_id,
                                           'replication_key')
@@ -145,8 +147,13 @@ def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version
 
     time_extracted = utils.now()
 
-    LOGGER.info('Running %s', query_string)
-    cursor.execute(select_sql, params)
+    # Adding logic to reattempt query in case of 2013 MySQL timeout.
+    try:
+        cursor.execute(select_sql, params)
+    except Exception:
+        LOGGER.info('Running %s',query_string)
+        LOGGER.exception()
+        cursor.execute(select_sql, params)
 
     row = cursor.fetchone()
     rows_saved = 0
@@ -154,6 +161,10 @@ def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version
     database_name = get_database_name(catalog_entry)
 
     with metrics.record_counter(None) as counter:
+        #Rename table to include database name so it is included when sent to Stitch.
+        catalog_entry.table = str(database_name) + '_' + str(catalog_entry.table)
+        catalog_entry.stream = str(database_name) + '_' + str(catalog_entry.stream)
+        
         counter.tags['database'] = database_name
         counter.tags['table'] = catalog_entry.table
 
@@ -202,5 +213,11 @@ def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version
                 singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
 
             row = cursor.fetchone()
+
+    #Update and backup state file to keep current increment in case of error.
+    if original_state_file != '':
+        os.rename(original_state_file,original_state_file + '_backup')
+        with open(original_state_file,'w') as state_file:
+            json.dump(copy.deepcopy(state),state_file)
 
     singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))

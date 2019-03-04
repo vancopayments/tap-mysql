@@ -216,7 +216,7 @@ def sync_table(mysql_conn, config, catalog_entry, state, columns, stream_version
                                         'version')
 
     activate_version_message = singer.ActivateVersionMessage(
-        stream=catalog_entry.stream,
+        stream='%s_%s'%(common.get_database_name(catalog_entry),catalog_entry.stream),
         version=stream_version
     )
 

@@ -12,7 +12,7 @@ LOGGER = singer.get_logger()
 
 BOOKMARK_KEYS = {'replication_key', 'replication_key_value', 'version'}
 
-def sync_table(mysql_conn, catalog_entry, state, columns):
+def sync_table(mysql_conn, catalog_entry, state, columns, original_state_file=''):
     common.whitelist_bookmark_keys(BOOKMARK_KEYS, catalog_entry.tap_stream_id, state)
 
     catalog_metadata = metadata.to_map(catalog_entry.metadata)
@@ -43,7 +43,7 @@ def sync_table(mysql_conn, catalog_entry, state, columns):
                                   stream_version)
 
     activate_version_message = singer.ActivateVersionMessage(
-        stream=catalog_entry.stream,
+        stream='%s_%s'%(common.get_database_name(catalog_entry),catalog_entry.stream),
         version=stream_version
     )
 
@@ -72,4 +72,5 @@ def sync_table(mysql_conn, catalog_entry, state, columns):
                               select_sql,
                               columns,
                               stream_version,
-                              params)
+                              params,
+                              original_state_file)

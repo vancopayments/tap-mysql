@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 # pylint: disable=missing-docstring,not-an-iterable,too-many-locals,too-many-arguments,too-many-branches,invalid-name,duplicate-code,too-many-statements
 
+import os
+import json
+import sys
+import time
 import datetime
 import collections
 import itertools
@@ -28,6 +32,8 @@ import tap_mysql.sync_strategies.incremental as incremental
 
 from tap_mysql.connection import connect_with_backoff, MySQLConnection
 
+#Configuration Values
+CONFIG_OBJ = utils.load_config()
 
 Column = collections.namedtuple('Column', [
     "table_schema",
@@ -498,14 +504,14 @@ def write_schema_message(catalog_entry, bookmark_properties=[]):
     key_properties = common.get_key_properties(catalog_entry)
 
     singer.write_message(singer.SchemaMessage(
-        stream=catalog_entry.stream,
+        stream='%s_%s'%(common.get_database_name(catalog_entry),catalog_entry.stream),
         schema=catalog_entry.schema.to_dict(),
         key_properties=key_properties,
         bookmark_properties=bookmark_properties
     ))
 
 
-def do_sync_incremental(mysql_conn, catalog_entry, state, columns):
+def do_sync_incremental(mysql_conn, catalog_entry, state, columns,original_state_file=''):
     LOGGER.info("Stream %s is using incremental replication", catalog_entry.stream)
 
     md_map = metadata.to_map(catalog_entry.metadata)
@@ -517,7 +523,7 @@ def do_sync_incremental(mysql_conn, catalog_entry, state, columns):
     write_schema_message(catalog_entry=catalog_entry,
                          bookmark_properties=[replication_key])
 
-    incremental.sync_table(mysql_conn, catalog_entry, state, columns)
+    incremental.sync_table(mysql_conn, catalog_entry, state, columns,original_state_file)
 
     singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
 
@@ -619,7 +625,7 @@ def do_sync_full_table(mysql_conn, config, catalog_entry, state, columns):
     singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
 
 
-def sync_non_binlog_streams(mysql_conn, non_binlog_catalog, config, state):
+def sync_non_binlog_streams(mysql_conn, non_binlog_catalog, config, state,original_state_file=''):
     for catalog_entry in non_binlog_catalog.streams:
         columns = list(catalog_entry.schema.properties.keys())
 
@@ -645,7 +651,7 @@ def sync_non_binlog_streams(mysql_conn, non_binlog_catalog, config, state):
             log_engine(mysql_conn, catalog_entry)
 
             if replication_method == 'INCREMENTAL':
-                do_sync_incremental(mysql_conn, catalog_entry, state, columns)
+                do_sync_incremental(mysql_conn, catalog_entry, state, columns,original_state_file)
             elif replication_method == 'LOG_BASED':
                 do_sync_historical_binlog(mysql_conn, config, catalog_entry, state, columns)
             elif replication_method == 'FULL_TABLE':
@@ -665,13 +671,19 @@ def sync_binlog_streams(mysql_conn, binlog_catalog, config, state):
         with metrics.job_timer('sync_binlog') as timer:
             binlog.sync_binlog_stream(mysql_conn, config, binlog_catalog.streams, state)
 
-
-def do_sync(mysql_conn, config, catalog, state):
+def do_sync(mysql_conn, config, catalog, state, original_state_file=  ''):
     non_binlog_catalog = get_non_binlog_streams(mysql_conn, catalog, config, state)
     binlog_catalog = get_binlog_streams(mysql_conn, catalog, config, state)
 
-    sync_non_binlog_streams(mysql_conn, non_binlog_catalog, config, state)
+    sync_non_binlog_streams(mysql_conn, non_binlog_catalog, config, state,original_state_file)
     sync_binlog_streams(mysql_conn, binlog_catalog, config, state)
+    
+    #Update and backup state file.
+    if original_state_file != '':
+        LOGGER.info('Updating state file, and backing up old state file.\n')
+        os.rename(original_state_file,original_state_file+'_backup')
+        with open(original_state_file,'w') as state_file:
+            json.dump(copy.deepcopy(state),state_file)
 
 def log_server_params(mysql_conn):
     with connect_with_backoff(mysql_conn) as open_conn:
@@ -706,28 +718,90 @@ def log_server_params(mysql_conn):
             LOGGER.warning("Encountered error checking server params. Error: (%s) %s", *e.args)
 
 
+def delete_old_logs():
+    log_directory = CONFIG_OBJ.get('shared_config', 'log_path')
+    join = os.path.join
+    timedelta = datetime.timedelta
+    datetimeobj = datetime.datetime
+    currentdate = datetimeobj.now()
+    removedate = currentdate - timedelta(days=int(CONFIG_OBJ.get('shared_config', 'log_file_archive_days')))
+    logfilelist = [file for file in os.listdir(log_directory) if os.path.isfile(join(log_directory, file))]
+
+    for logfile in logfilelist:
+        log_filepath = join(log_directory, logfile)
+        if str(logfile).startswith('tap.log') and \
+            datetimeobj.utcfromtimestamp(os.path.getmtime(log_filepath)) < removedate:
+            os.remove(log_filepath)
+
+
 def main_impl():
-    args = utils.parse_args(REQUIRED_CONFIG_KEYS)
+    args = utils.parse_args(REQUIRED_CONFIG_KEYS, CONFIG_OBJ.items('tap_config'))
+    timedelta = datetime.timedelta
 
     mysql_conn = MySQLConnection(args.config)
     log_server_params(mysql_conn)
+    original_state_file = getattr(args, 'original_state_file', '')
+    state = args.state or {}
+    catalog = {}
 
     if args.discover:
         do_discover(mysql_conn, args.config)
+        return
     elif args.catalog:
-        state = args.state or {}
-        do_sync(mysql_conn, args.config, args.catalog, state)
+        catalog = args.catalog
     elif args.properties:
         catalog = Catalog.from_dict(args.properties)
-        state = args.state or {}
-        do_sync(mysql_conn, args.config, catalog, state)
     else:
-        LOGGER.info("No properties were selected")
+        LOGGER.warning("No properties were selected")
+        return
+
+    interval = CONFIG_OBJ.get('tap_config', 'interval')
+    runtime = CONFIG_OBJ.get('tap_config', 'runtime')
+
+    # Set initial runtime stripping out seconds and microseconds.
+    datetimeobj = datetime.datetime
+    nextrundate = datetimeobj.now().strftime('%Y-%m-%d')
+    nextrundatetime = datetimeobj.strptime('%s %s' % (nextrundate, runtime), '%Y-%m-%d %H:%M:%S')
+    nextrundatetime = nextrundatetime.replace(second=0, microsecond=0)
+
+    # Start the syncing loop.
+    if CONFIG_OBJ.get('tap_config','schedule_sync'):
+        while True:
+            # Print what's happening on a static line.
+            sys.stdout.write('Waiting for next run time: %s \r' % datetimeobj.strftime(nextrundatetime, '%Y-%m-%d %H:%M:%S'))
+            sys.stdout.flush()
+    
+            # Run sync if next runtime is now.
+            if nextrundatetime == datetimeobj.now().replace(second=0, microsecond=0):
+                delete_old_logs()
+                do_sync(mysql_conn, args.config, catalog, state, original_state_file)
+                time.sleep(60)
+    
+            # If next runtime is earlier then current time, update next runtime based on interval.
+            elif nextrundatetime < datetimeobj.now():
+                if interval == 'hourly':
+                    nextrundatetime = nextrundatetime + timedelta(hours=1)
+                elif interval == 'daily':
+                    nextrundatetime = nextrundatetime + timedelta(days=1)
+                elif interval == 'weekly':
+                    nextrundatetime = nextrundatetime + timedelta(days=7)
+    
+                sys.stdout.write(
+                    'Waiting for next run time: %s \r' % datetimeobj.strftime(nextrundatetime, '%Y-%m-%d %H:%M:%S'))
+                sys.stdout.flush()
+                LOGGER.info('Waiting for next run time: %s \r' % datetimeobj.strftime(nextrundatetime, '%Y-%m-%d %H:%M:%S'))
+                time.sleep(60)
+    
+            # Not time to sync, continue waiting...
+            else:
+                time.sleep(60)
+    else:
+        delete_old_logs()
+        do_sync(mysql_conn,args.config,catalog,state,original_state_file)
 
 
 def main():
     try:
         main_impl()
-    except Exception as exc:
-        LOGGER.critical(exc)
-        raise exc
+    except Exception:
+        LOGGER.exception("An Exception has occurred.")
