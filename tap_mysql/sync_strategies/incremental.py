@@ -63,8 +63,6 @@ def sync_table(mysql_conn, catalog_entry, state, columns, original_state_file=''
                     replication_key_metadata)
 
                 params['replication_key_value'] = replication_key_value
-            elif replication_key_metadata is not None:
-                select_sql += ' ORDER BY `{}` ASC'.format(replication_key_metadata)
 
             common.sync_query(cur,
                               catalog_entry,
