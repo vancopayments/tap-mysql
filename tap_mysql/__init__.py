@@ -760,23 +760,25 @@ def main_impl():
         interval = CONFIG_OBJ.get('tap_config','interval')
         runtime = CONFIG_OBJ.get('tap_config','runtime')
 
-        # Set initial runtime stripping out seconds and microseconds.
-        datetimeobj = datetime.datetime
-        nextrundate = datetimeobj.now().strftime('%Y-%m-%d')
-        nextrundatetime = datetimeobj.strptime('%s %s' % (nextrundate,runtime),'%Y-%m-%d %H:%M:%S')
-        nextrundatetime = nextrundatetime.replace(second=0,microsecond=0)
-        
+    # Set initial runtime stripping out seconds and microseconds.
+    datetimeobj = datetime.datetime
+    nextrundate = datetimeobj.now().strftime('%Y-%m-%d')
+    nextrundatetime = datetimeobj.strptime('%s %s' % (nextrundate, runtime), '%Y-%m-%d %H:%M:%S')
+    nextrundatetime = nextrundatetime.replace(second=0, microsecond=0)
+    logcount = 0
+
+    # Start the syncing loop.
+    if str(CONFIG_OBJ.get('tap_config', 'schedule_sync')).upper() == 'TRUE':
         while True:
             # Print what's happening on a static line.
-            sys.stdout.write('Waiting for next run time: %s \r' % datetimeobj.strftime(nextrundatetime, '%Y-%m-%d %H:%M:%S'))
-            sys.stdout.flush()
     
             # Run sync if next runtime is now.
             if nextrundatetime == datetimeobj.now().replace(second=0, microsecond=0):
                 delete_old_logs()
                 do_sync(mysql_conn, args.config, catalog, state, original_state_file)
                 time.sleep(60)
-    
+                logcount = 0
+
             # If next runtime is earlier then current time, update next runtime based on interval.
             elif nextrundatetime < datetimeobj.now():
                 if interval == 'hourly':
@@ -785,13 +787,19 @@ def main_impl():
                     nextrundatetime = nextrundatetime + timedelta(days=1)
                 elif interval == 'weekly':
                     nextrundatetime = nextrundatetime + timedelta(days=7)
-    
-                sys.stdout.write(
-                    'Waiting for next run time: %s \r' % datetimeobj.strftime(nextrundatetime, '%Y-%m-%d %H:%M:%S'))
-                sys.stdout.flush()
-                LOGGER.info('Waiting for next run time: %s \r' % datetimeobj.strftime(nextrundatetime, '%Y-%m-%d %H:%M:%S'))
+
+                # Print what's happening.
+                LOGGER.info('Waiting for next run time: %s \r' % datetimeobj.strftime(nextrundatetime,
+                                                                                      '%Y-%m-%d %H:%M:%S'))
                 time.sleep(60)
-    
+                logcount += 1
+
+            # Print what's happening.
+            elif logcount == 0:
+                LOGGER.info('Waiting for next run time: %s \r' % datetimeobj.strftime(nextrundatetime,
+                                                                                      '%Y-%m-%d %H:%M:%S'))
+                logcount += 1
+
             # Not time to sync, continue waiting...
             else:
                 time.sleep(60)
