@@ -216,7 +216,7 @@ def sync_table(mysql_conn, config, catalog_entry, state, columns, stream_version
                                         'version')
 
     activate_version_message = singer.ActivateVersionMessage(
-        stream=catalog_entry.stream,
+        stream='%s_%s'%(common.get_database_name(catalog_entry),catalog_entry.stream),
         version=stream_version
     )
 
@@ -225,29 +225,9 @@ def sync_table(mysql_conn, config, catalog_entry, state, columns, stream_version
     if not initial_full_table_complete and not (version_exists and state_version is None):
         singer.write_message(activate_version_message)
 
-    key_props_are_auto_incrementing = pks_are_auto_incrementing(mysql_conn, catalog_entry)
-
-    allow_non_auto_incrementing_pk = pks_are_integer_or_varchar(mysql_conn,
-                                                                      config,
-                                                                      catalog_entry)
-    pk_clause = ""
-
     with connect_with_backoff(mysql_conn) as open_conn:
         with open_conn.cursor() as cur:
             select_sql = common.generate_select_sql(catalog_entry, columns)
-
-            if key_props_are_auto_incrementing:
-                LOGGER.info("Detected auto-incrementing primary key(s) - will replicate incrementally")
-
-                state = update_incremental_full_table_state(catalog_entry, state, cur)
-                pk_clause = generate_pk_clause(catalog_entry, state)
-            elif allow_non_auto_incrementing_pk:
-                LOGGER.info("Allowing non-auto-incrementing primary key(s) - will replicate incrementally")
-
-                state = update_incremental_full_table_state(catalog_entry, state, cur)
-                pk_clause = generate_pk_clause(catalog_entry, state)
-
-            select_sql += pk_clause
             params = {}
 
             # common.sync_query(cur, catalog_entry, state, select_sql, columns, stream_version, params)
