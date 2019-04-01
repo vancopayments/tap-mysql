@@ -760,18 +760,15 @@ def main_impl():
         interval = CONFIG_OBJ.get('tap_config','interval')
         runtime = CONFIG_OBJ.get('tap_config','runtime')
 
-    # Set initial runtime stripping out seconds and microseconds.
-    datetimeobj = datetime.datetime
-    nextrundate = datetimeobj.now().strftime('%Y-%m-%d')
-    nextrundatetime = datetimeobj.strptime('%s %s' % (nextrundate, runtime), '%Y-%m-%d %H:%M:%S')
-    nextrundatetime = nextrundatetime.replace(second=0, microsecond=0)
-    logcount = 0
+        # Set initial runtime stripping out seconds and microseconds.
+        datetimeobj = datetime.datetime
+        nextrundate = datetimeobj.now().strftime('%Y-%m-%d')
+        nextrundatetime = datetimeobj.strptime('%s %s' % (nextrundate, runtime), '%Y-%m-%d %H:%M:%S')
+        nextrundatetime = nextrundatetime.replace(second=0, microsecond=0)
+        logcount = 0
 
-    # Start the syncing loop.
-    if str(CONFIG_OBJ.get('tap_config', 'schedule_sync')).upper() == 'TRUE':
+        # Start the syncing loop.
         while True:
-            # Print what's happening on a static line.
-    
             # Run sync if next runtime is now.
             if nextrundatetime == datetimeobj.now().replace(second=0, microsecond=0):
                 delete_old_logs()
